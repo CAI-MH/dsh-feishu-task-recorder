@@ -1,0 +1,25 @@
+{
+  "name": "dsh-feishu-task-recorder",
+  "version": "0.2.0",
+  "description": "轮询飞书会话提取候选任务，与任务看板插件双向同步，含界面悬浮面板 — DSH bundle。",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  }
+}

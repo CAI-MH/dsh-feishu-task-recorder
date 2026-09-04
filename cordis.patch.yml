@@ -1,0 +1,4 @@
+# dsh-feishu-task-recorder bundle patch：插入飞书任务记录器插件行。
+- insert:
+    - id: feishu-task-recorder
+      name: 'dsh-feishu-task-recorder'
