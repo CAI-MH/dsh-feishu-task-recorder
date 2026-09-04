@@ -27,9 +27,25 @@ dsh plugin --profile web add dsh-feishu-task-recorder
 
 或将它加入 profile 的 `package.json` dependencies,并列入 `dsh.profile.bundles`,然后重启 `dsh web`。
 
+## 配置
+
+所有字段都有安全默认值,可在 profile 的 `cordis.patch.yml` 中覆盖:
+
+```yaml
+- id: feishu-task-recorder
+  config:
+    workspace: /path/to/your/workspace   # feishu-tasks.json/.md 存放目录
+    larkCli: /opt/homebrew/bin/lark-cli  # lark-cli 命令名或绝对路径
+    fallbackOrigin: 'http://127.0.0.1:62658'  # 自动学习前的看板 API 兜底源
+```
+
+- `workspace` —— 任务存储文件目录。留空时依次尝试:环境变量 `DSH_FEISHU_WORKSPACE` → DSH 进程当前目录。
+- `larkCli` —— DSH 进程 `PATH` 中的命令名,或绝对路径。macOS 桌面 app 的 `PATH` 通常不含 `/opt/homebrew/bin`,建议配置绝对路径。
+- `fallbackOrigin` —— 仅在面板首次请求教会插件当前 webServer 源之前使用。
+
 ## 数据存储
 
-任务状态保存在会话工作区根目录:`feishu-tasks.json`(数据)与 `feishu-tasks.md`(可读看板)。
+任务状态保存在配置的工作区目录:`feishu-tasks.json`(数据)与 `feishu-tasks.md`(可读看板)。
 
 ## 许可证
 

@@ -7,17 +7,29 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 export const name = 'feishu-task-recorder'
 export const inject = ['timer', 'tools', 'webServer']
 
-// 会话工作区：任务文件落在用户可见的工作区根目录
-const WORKSPACE = '/Users/caimaohua/work'
-const SANDBOX = { mode: 'workspace-write', workspaceRoot: WORKSPACE }
+// 默认配置：全部可通过 cordis.patch.yml 中本插件行的 config: 覆盖
+const DEFAULT_CONFIG = {
+  // 任务文件（feishu-tasks.json / feishu-tasks.md）存放目录，通常是会话工作区根目录。
+  // 留空时依次尝试：环境变量 DSH_FEISHU_WORKSPACE → DSH 进程当前目录。
+  workspace: '',
+  // lark-cli 可执行文件：PATH 中的命令名，或绝对路径（macOS 桌面 app 的 PATH 可能
+  // 不含 /opt/homebrew/bin，此时建议配置绝对路径，如 /opt/homebrew/bin/lark-cli）。
+  larkCli: 'lark-cli',
+  // 看板 API 兜底源：任务看板插件与本插件在同一进程的同一 webServer 上，DSH 监听端口
+  // 每次启动都会变，所以从面板请求的 Host 头动态学习当前源；学习前使用该兜底值。
+  fallbackOrigin: 'http://127.0.0.1:62658',
+}
+
+function resolveWorkspace(cfg) {
+  if (typeof cfg.workspace === 'string' && cfg.workspace.trim() !== '') return cfg.workspace.trim()
+  const env = typeof process !== 'undefined' && process.env ? process.env.DSH_FEISHU_WORKSPACE : ''
+  if (typeof env === 'string' && env.trim() !== '') return env.trim()
+  return typeof process !== 'undefined' && typeof process.cwd === 'function' ? process.cwd() : '.'
+}
+
 const STORE_FILE = 'feishu-tasks.json'
 const BOARD_FILE = 'feishu-tasks.md'
 const SEEN_CAP = 5000
-// 身份后端：本机 lark-cli（用户态令牌由它托管，插件不碰任何密钥）
-const LARK = '/opt/homebrew/bin/lark-cli'
-// 任务看板插件与本插件在同一进程的同一 webServer 上。DSH 的监听端口每次启动都会变，
-// 所以不硬编码：从面板请求的 Host 头动态学习当前源（并持久化到工作区），学习前用兜底值。
-const FALLBACK_ORIGIN = 'http://127.0.0.1:62658'
 
 // 任务状态：pending(待审核) -> ai(AI实现) / manual(人工实现) / rejected(非任务) -> done(完成)
 const STATUS = ['pending', 'ai', 'manual', 'rejected', 'done']
@@ -27,7 +39,14 @@ const render = (_args, value) => [
 ]
 const OUT_SCHEMA = { type: 'object', additionalProperties: true }
 
-export function apply(ctx) {
+export function apply(ctx, config) {
+  const cfg = Object.assign({}, DEFAULT_CONFIG, config)
+  // 任务文件落在配置的工作区根目录；lark-cli 路径与看板兜底源同样来自配置
+  const WORKSPACE = resolveWorkspace(cfg)
+  const SANDBOX = { mode: 'workspace-write', workspaceRoot: WORKSPACE }
+  const LARK = cfg.larkCli || DEFAULT_CONFIG.larkCli
+  const FALLBACK_ORIGIN = cfg.fallbackOrigin || DEFAULT_CONFIG.fallbackOrigin
+
   const shell = ctx.get('shell')
   const fs = ctx.get('fs')
 

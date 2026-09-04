@@ -27,9 +27,25 @@ dsh plugin --profile web add dsh-feishu-task-recorder
 
 Or add it to your profile's `package.json` dependencies and list it under `dsh.profile.bundles`, then restart `dsh web`.
 
+## Configuration
+
+All fields have safe defaults; override them from your profile's `cordis.patch.yml`:
+
+```yaml
+- id: feishu-task-recorder
+  config:
+    workspace: /path/to/your/workspace   # where feishu-tasks.json/.md live
+    larkCli: /opt/homebrew/bin/lark-cli  # lark-cli command name or absolute path
+    fallbackOrigin: 'http://127.0.0.1:62658'  # board API origin until auto-learned
+```
+
+- `workspace` — directory for the task store files. Empty means: `$DSH_FEISHU_WORKSPACE` → the DSH process cwd.
+- `larkCli` — a command name found on the DSH process `PATH`, or an absolute path. macOS desktop apps often lack `/opt/homebrew/bin` on `PATH`; use an absolute path there.
+- `fallbackOrigin` — used only before the panel's first request teaches the plugin the live web-server origin.
+
 ## Data storage
 
-Task state is stored as `feishu-tasks.json` (plus a readable `feishu-tasks.md` board) in the session workspace root.
+Task state is stored as `feishu-tasks.json` (plus a readable `feishu-tasks.md` board) in the configured workspace.
 
 ## License
 
