@@ -19,6 +19,10 @@
 - 已安装并完成**用户态**授权的 [`lark-cli`](https://www.npmjs.com/package/@larksuiteoapi/lark-cli) —— 插件复用它的飞书身份,自身不接触任何密钥
 - 同一 profile 中安装任务看板插件以获得看板同步(可选,推荐)
 
+## 沙箱与 token 存储
+
+DSH 以 `workspace-write` 沙箱运行插件的 shell 命令,默认只允许写 workspace 与 `/tmp`。lark-cli 刷新 user token 时要写 `~/Library/Application Support/lark-cli/*.enc`,该目录在可写根之外,会报 `keychain Set failed`。因此插件把其 lark-cli 调用的可写根指向该 token 目录,同时不改动 `HOME`,让 master key 继续留在 macOS 钥匙串——不复制凭据、不分裂 token。
+
 ## 安装
 
 ```sh

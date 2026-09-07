@@ -50,6 +50,12 @@ export function apply(ctx, config) {
   const shell = ctx.get('shell')
   const fs = ctx.get('fs')
 
+  // lark-cli 的 token 存储目录（真实家目录下）。DSH workspace-write 沙箱默认只允许写
+  // workspace + /tmp，这里把本插件发起的 lark-cli 调用的可写根指向 token 目录，使 user token
+  // 刷新能落盘，而无需复制凭据或重定向 HOME（master key 仍留在 macOS 钥匙串）。
+  const LARK_STORAGE_DIR = (typeof process !== 'undefined' && process.env && process.env.HOME
+    ? process.env.HOME : '') + '/Library/Application Support/lark-cli'
+
   const state = {
     tasks: [],
     seenIds: [],
@@ -104,9 +110,18 @@ export function apply(ctx, config) {
   // ---------- lark-cli 调用 ----------
   function q(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'" }
 
+  // 本插件发起的 lark-cli 调用的沙箱策略：可写根指向 lark-cli 的 token 目录。
+  // 不重定向 HOME —— 让 lark-cli 继续用真实家目录读 config 与 macOS 钥匙串里的 master key，
+  // 仅把 token 刷新写盘放行到 token 目录，避免复制凭据与 token 分裂。
+  const LARK_SANDBOX = { mode: 'workspace-write', workspaceRoot: LARK_STORAGE_DIR }
+
   async function runLark(args, timeoutMs) {
     if (shell === undefined) throw new Error('shell 服务不可用')
-    const spec = shell.resolve({ command: LARK + ' ' + args.map(q).join(' '), timeoutMs: timeoutMs || 45000 })
+    const spec = shell.resolve({
+      command: LARK + ' ' + args.map(q).join(' '),
+      timeoutMs: timeoutMs || 45000,
+      sandboxPolicy: LARK_SANDBOX,
+    })
     const res = await shell.run(spec)
     const text = (res.stdout && res.stdout.text) || ''
     let json
@@ -526,6 +541,57 @@ export function apply(ctx, config) {
     }
   }
 
+  // ---------- self-check（轮询错误自查诊断）----------
+  async function selfCheck() {
+    const report = {
+      time: new Date().toISOString(),
+      larkStorageDir: LARK_STORAGE_DIR,
+      issues: [],
+      advice: [],
+      doctor: null,
+      whoami: null,
+    }
+    const runShell = async (command, timeoutMs) => {
+      if (shell === undefined) return { error: 'shell 服务不可用' }
+      try {
+        const spec = shell.resolve({ command: command, timeoutMs: timeoutMs || 30000, sandboxPolicy: LARK_SANDBOX })
+        const res = await shell.run(spec)
+        return {
+          exitCode: res.exitCode,
+          stdout: (res.stdout && res.stdout.text) || '',
+          stderr: (res.stderr && res.stderr.text) || '',
+          timedOut: !!res.timedOut,
+        }
+      } catch (e) {
+        return { error: String((e && e.message) || e) }
+      }
+    }
+
+    // lark-cli 健康检查（token 目录作为可写根，复现真实轮询路径）
+    report.doctor = await runShell(LARK + ' doctor 2>&1')
+    report.whoami = await runShell(LARK + ' whoami 2>&1')
+
+    const doctorText = ((report.doctor.stdout || '') + '\n' + (report.doctor.stderr || ''))
+    const whoamiText = ((report.whoami.stdout || '') + '\n' + (report.whoami.stderr || ''))
+    const keychainErr = doctorText.indexOf('keychain Set failed') >= 0 || whoamiText.indexOf('keychain Set failed') >= 0
+    const revoked = doctorText.indexOf('refresh token has been revoked') >= 0
+
+    if (keychainErr) {
+      report.issues.push({ level: 'error', title: 'token 写入仍被沙箱阻止', detail: 'lark-cli 无法写 token 目录（' + LARK_STORAGE_DIR + '），请确认该目录存在且沙箱放行。' })
+    }
+    if (revoked) {
+      report.issues.push({ level: 'warn', title: 'user token 需要重新授权', detail: 'refresh token 已失效（可能被其它 lark-cli 实例刷新过），请运行 lark-cli auth login 重新授权。' })
+    }
+    if (!keychainErr && !revoked) {
+      report.issues.push({ level: 'ok', title: 'lark-cli 存储正常', detail: 'token 目录可写（' + LARK_STORAGE_DIR + '），master key 留在 macOS 钥匙串。' })
+    }
+    if (revoked) {
+      report.advice.push('飞书的 refresh token 单次有效：同一授权若被多处 lark-cli 实例刷新会互相失效，请用 lark-cli auth login 重新完成用户态授权。')
+    }
+
+    return report
+  }
+
   // ---------- HTTP routes（浏览器面板用；仅接受本机回环 + 浏览器同源标记） ----------
   function writeJson(res, status, obj) {
     const body = JSON.stringify(obj)
@@ -594,6 +660,20 @@ export function apply(ctx, config) {
           writeJson(res, 200, await boardData())
         } catch (e) {
           writeJson(res, 400, { ok: false, error: String((e && e.message) || e) })
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/feishu-tasks/selfcheck',
+      handler: async (req, res) => {
+        captureOrigin(req)
+        if (req.method !== 'GET') return writeJson(res, 405, { ok: false, error: 'method-not-allowed' })
+        if (!trustedRequest(req)) return writeJson(res, 403, { ok: false, error: 'forbidden' })
+        try {
+          writeJson(res, 200, await selfCheck())
+        } catch (e) {
+          writeJson(res, 500, { ok: false, error: String((e && e.message) || e) })
         }
       },
     },

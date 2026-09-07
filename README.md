@@ -19,6 +19,10 @@ Poll Feishu (Lark) chats, extract candidate tasks with the model, and sync them 
 - [`lark-cli`](https://www.npmjs.com/package/@larksuiteoapi/lark-cli) installed and authorized at the **user** level — the plugin reuses its Feishu identity and never touches any token itself
 - The task-board plugin installed in the same profile for board sync (optional but recommended)
 
+## Sandbox & token storage
+
+DSH runs the plugin's shell commands under a `workspace-write` sandbox that, by default, only allows writes inside the workspace and `/tmp`. `lark-cli` refreshes its user token by writing `~/Library/Application Support/lark-cli/*.enc`, which sits outside that root and would fail with `keychain Set failed`. The plugin therefore pins the writable root of its `lark-cli` invocations to that token directory, while leaving `HOME` untouched so the master key stays in the macOS Keychain — no credential copying, no token forking.
+
 ## Install
 
 ```sh

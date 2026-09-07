@@ -28,7 +28,14 @@ window.__ModuleLoader__.load({
       '.ftb-select{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;font-size:12px;padding:2px 4px}' +
       '.ftb-empty{font-size:12px;color:var(--dsw-alias-label-secondary);padding:6px 0}' +
       '.ftb-err{color:var(--dsw-alias-state-error-primary);font-size:12px;padding:6px 0;word-break:break-all}' +
-      '.ftb-hint{font-size:11px;color:var(--dsw-alias-label-secondary);margin-top:2px}'
+      '.ftb-hint{font-size:11px;color:var(--dsw-alias-label-secondary);margin-top:2px}' +
+      '.ftb-sc{margin-top:8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden}' +
+      '.ftb-sc-head{padding:8px 10px;background:var(--dsw-alias-bg-layer-2);display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600}' +
+      '.ftb-sc-body{padding:8px 10px;font-size:12px}' +
+      '.ftb-sc-issue{padding:6px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}' +
+      '.ftb-sc-issue .t{font-weight:600}' +
+      '.ftb-sc-advice{margin-top:8px;padding:8px;background:rgba(245,166,35,.12);border-radius:6px}' +
+      '.ftb-sc-pre{white-space:pre-wrap;word-break:break-all;font-size:10px;max-height:160px;overflow:auto;background:var(--dsw-alias-bg-layer-2);padding:6px;border-radius:6px;margin-top:6px}'
 
     const INTERVAL_OPTIONS = [0.5, 1, 2, 3, 6, 12, 24]
 
@@ -70,6 +77,40 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'ftb-task' + (props.mode === 'done' ? ' done' : '') }, children)
     }
 
+    function SelfCheckPanel(props) {
+      const d = props.data || {}
+      const items = []
+      if (d.time) items.push(h('div', { className: 'ftb-meta', key: 'time' }, '检查时间：' + String(d.time).slice(0, 16).replace('T', ' ')))
+      if (d.error) items.push(h('div', { className: 'ftb-err', key: 'err' }, '自查失败：' + d.error))
+      for (const it of (d.issues || [])) {
+        const icon = it.level === 'error' ? '❌ ' : it.level === 'warn' ? '⚠️ ' : it.level === 'ok' ? '✅ ' : ''
+        items.push(h('div', { className: 'ftb-sc-issue', key: 'i' + items.length }, [
+          h('div', { className: 't', key: 't' }, icon + it.title),
+          h('div', { className: 'ftb-meta', key: 'd' }, it.detail),
+        ]))
+      }
+      if (d.advice && d.advice.length) {
+        items.push(h('div', { className: 'ftb-sc-advice', key: 'adv' }, d.advice.map((a, i) => h('div', { className: 'ftb-meta', key: i }, a))))
+      }
+      if (d.doctor || d.whoami) {
+        const raw = (d.doctor ? '=== lark-cli doctor ===\n' + ((d.doctor.stdout || '') + (d.doctor.stderr || '')) : '') +
+          (d.whoami ? '\n=== lark-cli whoami ===\n' + ((d.whoami.stdout || '') + (d.whoami.stderr || '')) : '')
+        items.push(h('details', { key: 'det' }, [
+          h('summary', { className: 'ftb-meta', style: { cursor: 'pointer' } }, '查看原始诊断输出'),
+          h('pre', { className: 'ftb-sc-pre' }, raw),
+        ]))
+      }
+      return h('div', { className: 'ftb-sc' }, [
+        h('div', { className: 'ftb-sc-head', key: 'head' }, [
+          h('span', { key: 't' }, '🩺 飞书插件自查'),
+          h('span', { className: 'spacer', key: 'sp' }),
+          h('button', { key: 'retry', className: 'ftb-btn ftb-btn-icon', onClick: props.onRetry, title: '重新诊断' }, '↻'),
+          h('button', { key: 'x', className: 'ftb-btn ftb-btn-icon', onClick: props.onClose, title: '关闭' }, '✕'),
+        ]),
+        h('div', { className: 'ftb-sc-body', key: 'body' }, items),
+      ])
+    }
+
     function Board() {
       const stateArr = React.useState(false)
       const open = stateArr[0]; const setOpen = stateArr[1]
@@ -77,6 +118,10 @@ window.__ModuleLoader__.load({
       const data = dataArr[0]; const setData = dataArr[1]
       const busyArr = React.useState(false)
       const busy = busyArr[0]; const setBusy = busyArr[1]
+      const scArr = React.useState(null)
+      const sc = scArr[0]; const setSc = scArr[1]
+      const scBusyArr = React.useState(false)
+      const scBusy = scBusyArr[0]; const setScBusy = scBusyArr[1]
 
       const refresh = async () => {
         try {
@@ -100,6 +145,13 @@ window.__ModuleLoader__.load({
       const onDone = (id) => act({ kind: 'done', id: id })
       const onSync = () => act({ kind: 'sync' })
       const onInterval = (ev) => act({ kind: 'interval', hours: Number(ev.target.value) })
+      const runSelfCheck = async () => {
+        setScBusy(true)
+        setSc(null)
+        try { setSc(await rpc('/api/feishu-tasks/selfcheck')) }
+        catch (e) { setSc({ error: String((e && e.message) || e) }) }
+        finally { setScBusy(false) }
+      }
 
       const pendingCount = data && data.counts ? data.counts.pending : 0
 
@@ -117,6 +169,7 @@ window.__ModuleLoader__.load({
       if (data && data.lastError) body.push(h('div', { className: 'ftb-err', key: 'err' }, '轮询错误：' + data.lastError))
       if (data && data.board && data.board.lastError) body.push(h('div', { className: 'ftb-err', key: 'berr' }, '看板同步：' + data.board.lastError))
       if (data && data.auth && data.auth.userReady === false) body.push(h('div', { className: 'ftb-err', key: 'auth' }, '飞书用户态未授权，请在会话里让 agent 发起授权'))
+      if (sc) body.push(h(SelfCheckPanel, { key: 'scpanel', data: sc, onClose: () => setSc(null), onRetry: runSelfCheck }))
       if (!data) body.push(h('div', { className: 'ftb-empty', key: 'loading' }, '加载中…'))
 
       function section(title, list, mode) {
@@ -148,6 +201,7 @@ window.__ModuleLoader__.load({
           }, INTERVAL_OPTIONS.map((v) => h('option', { key: v, value: String(v) }, v + ' 小时'))),
           h('button', { key: 'sync', className: 'ftb-btn ftb-btn-icon', disabled: busy, onClick: onSync, title: '立即轮询' }, '🔄'),
           h('button', { key: 'refresh', className: 'ftb-btn ftb-btn-icon', disabled: busy, onClick: refresh, title: '刷新' }, '↻'),
+          h('button', { key: 'sc', className: 'ftb-btn ftb-btn-icon', disabled: scBusy, onClick: runSelfCheck, title: '飞书插件自查' }, '🩺'),
           h('button', { key: 'x', className: 'ftb-btn ftb-btn-icon', onClick: () => setOpen(false), title: '关闭' }, '✕'),
         ]),
         h('div', { className: 'ftb-body', key: 'body' }, body),
