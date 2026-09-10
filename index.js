@@ -75,6 +75,8 @@ export function apply(ctx, config) {
     boardLastSyncAt: null,
     boardLastError: null,
     serverOrigin: null,
+    // 进行中的 device-flow 授权（内存态，不落盘、不暴露 device_code 给面板）
+    authFlow: null,
   }
 
   function boardOrigin() { return state.serverOrigin || FALLBACK_ORIGIN }
@@ -115,7 +117,8 @@ export function apply(ctx, config) {
   // 仅把 token 刷新写盘放行到 token 目录，避免复制凭据与 token 分裂。
   const LARK_SANDBOX = { mode: 'workspace-write', workspaceRoot: LARK_STORAGE_DIR }
 
-  async function runLark(args, timeoutMs) {
+  // 执行 lark-cli 并返回原始输出（不解析 JSON，用于 qrcode 等非 JSON 输出）
+  async function runLarkRaw(args, timeoutMs) {
     if (shell === undefined) throw new Error('shell 服务不可用')
     const spec = shell.resolve({
       command: LARK + ' ' + args.map(q).join(' '),
@@ -123,10 +126,18 @@ export function apply(ctx, config) {
       sandboxPolicy: LARK_SANDBOX,
     })
     const res = await shell.run(spec)
-    const text = (res.stdout && res.stdout.text) || ''
+    return {
+      text: (res.stdout && res.stdout.text) || '',
+      exitCode: res.exitCode,
+      stderr: (res.stderr && res.stderr.text) || '',
+    }
+  }
+
+  async function runLark(args, timeoutMs) {
+    const out = await runLarkRaw(args, timeoutMs)
     let json
-    try { json = JSON.parse(text) } catch (e) {
-      throw new Error('lark-cli 返回非 JSON（exit=' + res.exitCode + ' stderr=' + ((res.stderr && res.stderr.text) || '').slice(0, 120) + '）：' + text.slice(0, 200))
+    try { json = JSON.parse(out.text) } catch (e) {
+      throw new Error('lark-cli 返回非 JSON（exit=' + out.exitCode + ' stderr=' + out.stderr.slice(0, 120) + '）：' + out.text.slice(0, 200))
     }
     return json
   }
@@ -154,10 +165,83 @@ export function apply(ctx, config) {
         appId: json.appId || null,
         userReady: !!(ids.user && ids.user.available === true),
         botReady: !!(ids.bot && ids.bot.available === true),
+        userName: (ids.user && ids.user.userName) || null,
         userMessage: (ids.user && ids.user.message) || '',
       }
     } catch (e) {
-      return { ok: false, appId: null, userReady: false, botReady: false, userMessage: String((e && e.message) || e) }
+      return { ok: false, appId: null, userReady: false, botReady: false, userName: null, userMessage: String((e && e.message) || e) }
+    }
+  }
+
+  // 判断会话类型：p2p（单聊/个人私聊）还是 group（群聊）。
+  // 优先用返回的 chat_mode 字段；否则按 chat_id 前缀（单聊 chat_id = 对方 open_id，ou_ 开头）。
+  function chatTypeOf(chat) {
+    if (chat && chat.chat_mode === 'p2p') return 'p2p'
+    if (chat && typeof chat.chat_id === 'string' && chat.chat_id.indexOf('ou_') === 0) return 'p2p'
+    return 'group'
+  }
+
+  // ---------- 一键授权（device flow）----------
+  // 发起：lark-cli auth login --no-wait 拿到 verification_url + device_code，再生成 ASCII 二维码。
+  // 全程在 Host 内存态保存，不落盘、不把 device_code 暴露给面板。
+  async function startAuth() {
+    const json = await runLark(['auth', 'login', '--no-wait', '--json', '--domain', 'im'])
+    const deviceCode = json.device_code
+    const verificationUrl = json.verification_url
+    const expiresIn = typeof json.expires_in === 'number' && json.expires_in > 0 ? json.expires_in : 600
+    if (typeof deviceCode !== 'string' || deviceCode === '' || typeof verificationUrl !== 'string' || verificationUrl === '') {
+      throw new Error('授权发起失败：未取得 device_code / verification_url（' + JSON.stringify(json).slice(0, 200) + '）')
+    }
+    let qrAscii = ''
+    try {
+      qrAscii = (await runLarkRaw(['auth', 'qrcode', verificationUrl, '--ascii'])).text
+    } catch (e) {
+      qrAscii = ''
+    }
+    const now = Date.now()
+    state.authFlow = {
+      deviceCode: deviceCode,
+      verificationUrl: verificationUrl,
+      qrAscii: qrAscii,
+      startedAt: now,
+      expiresAt: now + expiresIn * 1000,
+    }
+    console.log('[feishu-task-recorder] 发起飞书授权（device flow），有效期 ' + expiresIn + ' 秒')
+    return authFlowView()
+  }
+
+  async function completeAuth() {
+    if (state.authFlow === null || typeof state.authFlow.deviceCode !== 'string') {
+      throw new Error('没有进行中的授权流程，请先点击「授权飞书」')
+    }
+    if (Date.now() > state.authFlow.expiresAt) {
+      state.authFlow = null
+      throw new Error('授权链接已过期，请重新点击「授权飞书」')
+    }
+    try {
+      await runLark(['auth', 'login', '--device-code', state.authFlow.deviceCode, '--domain', 'im', '--json'], 45000)
+    } catch (e) {
+      // 用户可能尚未在浏览器完成授权：保留 authFlow，允许再次点击「我已完成授权」重试
+      throw new Error('尚未完成授权（请先在浏览器/手机完成授权，再点「我已完成授权」）：' + String((e && e.message) || e))
+    }
+    state.authFlow = null
+    console.log('[feishu-task-recorder] 飞书授权完成')
+    return await authStatus()
+  }
+
+  function cancelAuth() {
+    state.authFlow = null
+    return { ok: true }
+  }
+
+  // 供面板/工具展示的授权流程摘要（不含 device_code）
+  function authFlowView() {
+    if (state.authFlow === null) return null
+    return {
+      verificationUrl: state.authFlow.verificationUrl,
+      qrAscii: state.authFlow.qrAscii,
+      startedAt: state.authFlow.startedAt,
+      expiresAt: state.authFlow.expiresAt,
     }
   }
 
@@ -361,7 +445,14 @@ export function apply(ctx, config) {
       if (Array.isArray(data.tasks)) state.tasks = data.tasks.map(normalizeTask)
       if (Array.isArray(data.seenIds)) state.seenIds = data.seenIds
       if (data.cursors !== null && typeof data.cursors === 'object') state.cursors = data.cursors
-      if (Array.isArray(data.trackedChats)) state.trackedChats = data.trackedChats
+      if (Array.isArray(data.trackedChats)) {
+        state.trackedChats = data.trackedChats.map((t) => {
+          if (typeof t.type !== 'string' || (t.type !== 'p2p' && t.type !== 'group')) {
+            t.type = chatTypeOf({ chat_id: t.chatId })
+          }
+          return t
+        })
+      }
       if (typeof data.pollHours === 'number' && data.pollHours > 0) state.pollHours = data.pollHours
       if (typeof data.lookbackHours === 'number' && data.lookbackHours > 0) state.lookbackHours = data.lookbackHours
       if (typeof data.serverOrigin === 'string' && data.serverOrigin.startsWith('http://')) state.serverOrigin = data.serverOrigin
@@ -403,8 +494,9 @@ export function apply(ctx, config) {
         const since = state.cursors[chatId] || String(nowSec - Math.round(state.lookbackHours * 3600))
         let pageToken = ''
         for (let page = 0; page < 3; page++) {
+          const isP2p = tracked.type === 'p2p' || (typeof tracked.type !== 'string' && chatId.indexOf('ou_') === 0)
           const params = {
-            container_id_type: 'chat',
+            container_id_type: isP2p ? 'p2p' : 'chat',
             container_id: chatId,
             start_time: since,
             sort_type: 'ByCreateTimeAsc',
@@ -429,6 +521,7 @@ export function apply(ctx, config) {
                   text: taskText,
                   status: 'pending',
                   chatName: chatName,
+                  chatType: isP2p ? 'p2p' : 'group',
                   senderId: senderId,
                   messageId: msg.message_id,
                   time: time,
@@ -514,7 +607,7 @@ export function apply(ctx, config) {
     return c
   }
   function slim(t) {
-    return { id: t.id, text: t.text, chatName: t.chatName, time: t.time, doneAt: t.doneAt || null, linked: typeof t.boardId === 'string' }
+    return { id: t.id, text: t.text, chatName: t.chatName, chatType: t.chatType || 'group', time: t.time, doneAt: t.doneAt || null, linked: typeof t.boardId === 'string' }
   }
   async function boardData() {
     const auth = await authStatus()
@@ -525,13 +618,14 @@ export function apply(ctx, config) {
       if (typeof t.boardId === 'string') linked++
     }
     return {
-      auth: { userReady: auth.userReady },
+      auth: { userReady: auth.userReady, userName: auth.userName, userMessage: auth.userMessage },
+      authFlow: authFlowView(),
       intervalHours: state.pollHours,
       lastPollAt: state.lastPollAt,
       lastError: state.lastError,
       counts: statusCounts(),
       board: { linked: linked, lastSyncAt: state.boardLastSyncAt, lastError: state.boardLastError },
-      trackedChats: state.trackedChats.map((t) => ({ chatId: t.chatId, name: t.name })),
+      trackedChats: state.trackedChats.map((t) => ({ chatId: t.chatId, name: t.name, type: t.type || 'group' })),
       groups: {
         pending: groups.pending.slice(-50).map(slim),
         ai: groups.ai.slice(-50).map(slim),
@@ -653,6 +747,12 @@ export function apply(ctx, config) {
             await setIntervalHours(body.hours)
           } else if (kind === 'sync') {
             await pollOnce()
+          } else if (kind === 'auth-start') {
+            await startAuth()
+          } else if (kind === 'auth-complete') {
+            await completeAuth()
+          } else if (kind === 'auth-cancel') {
+            cancelAuth()
           } else {
             return writeJson(res, 400, { ok: false, error: 'unknown-kind' })
           }
@@ -700,28 +800,46 @@ export function apply(ctx, config) {
           return {
             ok: false,
             auth: auth,
-            guidance: '用户态未授权。请告诉 agent「发起飞书授权」，它会运行 lark-cli auth login 给你生成授权链接；在浏览器确认后即可。',
+            guidance: '用户态未授权。可用 feishu_auth(action=start) 发起一键授权拿到链接与二维码；也可直接点页面右下角「飞书任务」面板里的「授权飞书」按钮。',
           }
         }
         const first = await pollOnce()
         return { ok: true, auth: auth, firstPoll: first }
       }),
 
+    defTool('feishu_auth',
+      '一键发起/完成飞书用户态授权（device flow）。action=start 发起并返回授权链接与二维码；用户在浏览器/手机完成授权后，action=complete 完成令牌落盘；action=status 查看状态；action=cancel 取消进行中的授权。',
+      {
+        action: { type: 'string', description: 'start / complete / status / cancel，默认 start' },
+      },
+      async (args) => {
+        const a = args || {}
+        const action = a.action || 'start'
+        if (action === 'status') return { auth: await authStatus(), authFlow: authFlowView() }
+        if (action === 'start') return { authFlow: await startAuth(), hint: '请打开 verification_url（或扫二维码）完成授权，然后调用 feishu_auth(action=complete) 完成落盘' }
+        if (action === 'complete') return { auth: await completeAuth() }
+        if (action === 'cancel') return cancelAuth()
+        throw new Error('action 必须是 start / complete / status / cancel')
+      }),
+
     defTool('feishu_chats',
-      '列出你飞书账号可见的会话（群聊/单聊），用于挑选要监听的会话。返回 chat_id 供 feishu_track 使用。',
+      '列出你飞书账号可见的会话（群聊 + 单聊/个人私聊），用于挑选要监听的会话。返回 chat_id 与 type（group/p2p）供 feishu_track 使用。',
       {},
       async () => {
         const out = []
         let pageToken = ''
         for (let p = 0; p < 3; p++) {
-          const params = { page_size: 100 }
+          const params = { page_size: 100, types: 'p2p,group' }
           if (pageToken !== '') params.page_token = pageToken
           const data = await api('GET', '/open-apis/im/v1/chats', params)
           for (const c of (data.items || [])) {
             if (typeof c.chat_id !== 'string') continue
+            const type = chatTypeOf(c)
+            const name = typeof c.name === 'string' && c.name !== '' ? c.name : (type === 'p2p' ? '(单聊)' : '(未命名群)')
             out.push({
               chatId: c.chat_id,
-              name: typeof c.name === 'string' && c.name !== '' ? c.name : '(未命名单聊)',
+              name: name,
+              type: type,
               tracked: state.trackedChats.some((t) => t.chatId === c.chat_id),
             })
           }
@@ -731,7 +849,7 @@ export function apply(ctx, config) {
             break
           }
         }
-        return { count: out.length, chats: out, hint: '用 feishu_track(action=add, chat_id=...) 把要监听的会话加进来' }
+        return { count: out.length, chats: out, hint: '用 feishu_track(action=add, chat_id=..., type=...) 把要监听的会话加进来（单聊 type=p2p）' }
       }),
 
     defTool('feishu_track',
@@ -740,6 +858,7 @@ export function apply(ctx, config) {
         action: { type: 'string', required: true, description: 'add / remove / list' },
         chat_id: { type: 'string', description: '会话 chat_id（add/remove 时必填）' },
         name: { type: 'string', description: '会话名称备注（add 时可选）' },
+        type: { type: 'string', description: '会话类型 group / p2p（add 时可选；不传按 chat_id 自动识别，单聊 chat_id 以 ou_ 开头）' },
       },
       async (args) => {
         const a = args || {}
@@ -748,7 +867,8 @@ export function apply(ctx, config) {
         const chatId = a.chat_id.trim()
         if (a.action === 'add') {
           if (state.trackedChats.some((t) => t.chatId === chatId)) return { ok: true, already: true, trackedChats: state.trackedChats }
-          state.trackedChats.push({ chatId: chatId, name: (typeof a.name === 'string' && a.name.trim() !== '') ? a.name.trim() : chatId })
+          const type = (typeof a.type === 'string' && (a.type === 'p2p' || a.type === 'group')) ? a.type : chatTypeOf({ chat_id: chatId })
+          state.trackedChats.push({ chatId: chatId, type: type, name: (typeof a.name === 'string' && a.name.trim() !== '') ? a.name.trim() : chatId })
           await saveAll()
           const r = await pollOnce()
           return { ok: true, trackedChats: state.trackedChats, firstPoll: r }

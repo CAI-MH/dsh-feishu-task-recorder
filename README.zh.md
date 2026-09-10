@@ -12,12 +12,23 @@
 - **审核工作流** —— `待审核 → AI 任务 / 人工任务 / 已丢弃 → 已完成`;可用聊天工具或面板逐条判定
 - **看板同步** —— 与 [`@linxin666/dsh-client-ui-task-board`](https://www.npmjs.com/package/@linxin666/dsh-client-ui-task-board) 任务看板通过同一 webServer 上的 HTTP API 双向同步
 - **悬浮面板** —— 在浏览器页面内直接审核、判定、完成任务
-- **全套工具** —— `feishu_setup`、`feishu_status`、`feishu_chats`、`feishu_track`、`feishu_sync_now`、`feishu_task_list`、`feishu_task_review`、`feishu_task_add`、`feishu_task_judge`、`feishu_task_done` 等
+- **一键授权** —— 面板内点「授权飞书」按钮即可发起 device-flow 授权，展示链接与二维码，用户自行在浏览器/手机完成，无需让 agent 代跑命令
+- **单聊支持** —— 会话列表同时列出群聊与个人私聊（`feishu_chats` 返回 `type` 字段），单聊消息同样可拉取并提取任务
+- **全套工具** —— `feishu_setup`、`feishu_auth`、`feishu_status`、`feishu_chats`、`feishu_track`、`feishu_sync_now`、`feishu_task_list`、`feishu_task_review`、`feishu_task_add`、`feishu_task_judge`、`feishu_task_done` 等
 
 ## 前置要求
 
 - 已安装并完成**用户态**授权的 [`lark-cli`](https://www.npmjs.com/package/@larksuiteoapi/lark-cli) —— 插件复用它的飞书身份,自身不接触任何密钥
 - 同一 profile 中安装任务看板插件以获得看板同步(可选,推荐)
+
+## 授权（一键）
+
+插件复用 `lark-cli` 的飞书**用户态**身份，自身不接触任何密钥。发起授权有两种方式：
+
+1. **面板按钮（推荐）**：打开页面右下角「飞书任务」面板 → 点「🔑 授权飞书」→ 面板展示授权链接与二维码 → 在浏览器点链接或手机扫码完成授权 → 回到面板点「✅ 我已完成授权」。
+2. **对话工具**：让 agent 调用 `feishu_auth(action=start)` 拿到链接/二维码，完成后调用 `feishu_auth(action=complete)`。
+
+授权采用 device flow，链接有效期约 10 分钟。授权范围 `--domain im`（读消息，含群聊与个人私聊）。
 
 ## 沙箱与 token 存储
 

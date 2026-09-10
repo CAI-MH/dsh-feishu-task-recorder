@@ -35,7 +35,14 @@ window.__ModuleLoader__.load({
       '.ftb-sc-issue{padding:6px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}' +
       '.ftb-sc-issue .t{font-weight:600}' +
       '.ftb-sc-advice{margin-top:8px;padding:8px;background:rgba(245,166,35,.12);border-radius:6px}' +
-      '.ftb-sc-pre{white-space:pre-wrap;word-break:break-all;font-size:10px;max-height:160px;overflow:auto;background:var(--dsw-alias-bg-layer-2);padding:6px;border-radius:6px;margin-top:6px}'
+      '.ftb-sc-pre{white-space:pre-wrap;word-break:break-all;font-size:10px;max-height:160px;overflow:auto;background:var(--dsw-alias-bg-layer-2);padding:6px;border-radius:6px;margin-top:6px}' +
+      '.ftb-auth{padding:10px;border:1px solid rgba(245,166,35,.55);border-radius:8px;margin-top:8px;background:rgba(245,166,35,.08)}' +
+      '.ftb-auth-title{font-size:13px;font-weight:600;margin-bottom:6px}' +
+      '.ftb-auth-link{display:block;font-size:12px;color:var(--dsw-alias-brand-primary);word-break:break-all;margin:8px 0}' +
+      '.ftb-auth-qr{white-space:pre;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:8px;line-height:8px;overflow-x:auto;background:var(--dsw-alias-bg-layer-2);padding:8px;border-radius:6px;margin:8px 0}' +
+      '.ftb-auth-row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}' +
+      '.ftb-auth-hint{font-size:11px;color:var(--dsw-alias-label-secondary);margin-top:6px}' +
+      '.ftb-type-tag{font-size:10px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2);border-radius:4px;padding:0 4px;margin-left:4px}'
 
     const INTERVAL_OPTIONS = [0.5, 1, 2, 3, 6, 12, 24]
 
@@ -61,7 +68,7 @@ window.__ModuleLoader__.load({
       const children = [
         h('div', { key: 'text' }, t.text),
         h('div', { className: 'ftb-meta', key: 'meta' },
-          '来源：' + t.chatName + ' · ' + (t.time || '').slice(0, 16).replace('T', ' ') + (t.linked ? ' · 🔗已上看板' : '')),
+          '来源：' + t.chatName + (t.chatType === 'p2p' ? ' · 单聊' : '') + ' · ' + (t.time || '').slice(0, 16).replace('T', ' ') + (t.linked ? ' · 🔗已上看板' : '')),
       ]
       if (props.mode === 'pending') {
         children.push(h('div', { className: 'ftb-actions', key: 'act' }, [
@@ -111,6 +118,43 @@ window.__ModuleLoader__.load({
       ])
     }
 
+    // 授权区块：未授权→一键授权按钮；授权中→链接+二维码+完成/取消；已授权→提示
+    function renderAuth(data, act, busy) {
+      const auth = (data && data.auth) || {}
+      const flow = data && data.authFlow
+      const items = []
+      if (auth.userReady) {
+        items.push(h('div', { className: 'ftb-auth', key: 'ok' }, [
+          h('div', { className: 'ftb-auth-title', key: 't' }, '✅ 飞书已授权' + (auth.userName ? '（' + auth.userName + '）' : '')),
+          h('div', { className: 'ftb-auth-hint', key: 'h' }, '正在监听会话并提取任务'),
+        ]))
+        return items
+      }
+      if (flow && flow.verificationUrl) {
+        const expired = Date.now() > flow.expiresAt
+        items.push(h('div', { className: 'ftb-auth', key: 'flow' }, [
+          h('div', { className: 'ftb-auth-title', key: 't' }, '🔑 完成飞书授权'),
+          h('div', { className: 'ftb-hint', key: 'h' }, expired ? '授权链接已过期，请取消后重新发起' : '点击下方链接，或扫描二维码，在浏览器/手机完成授权'),
+          h('a', { key: 'link', className: 'ftb-auth-link', href: flow.verificationUrl, target: '_blank', rel: 'noreferrer' }, flow.verificationUrl),
+          flow.qrAscii ? h('pre', { key: 'qr', className: 'ftb-auth-qr' }, flow.qrAscii) : null,
+          h('div', { className: 'ftb-auth-row', key: 'row' }, [
+            h('button', { key: 'done', className: 'ftb-btn ftb-btn-primary', disabled: busy || expired, onClick: () => act({ kind: 'auth-complete' }) }, '✅ 我已完成授权'),
+            h('button', { key: 'cancel', className: 'ftb-btn', disabled: busy, onClick: () => act({ kind: 'auth-cancel' }) }, '取消'),
+          ]),
+          h('div', { className: 'ftb-auth-hint', key: 'exp' }, '链接有效期约 10 分钟'),
+        ]))
+        return items
+      }
+      items.push(h('div', { className: 'ftb-auth', key: 'start' }, [
+        h('div', { className: 'ftb-auth-title', key: 't' }, '🔑 飞书未授权'),
+        h('div', { className: 'ftb-hint', key: 'h' }, '授权后可拉取群聊与个人私聊消息，自动提取任务'),
+        h('div', { className: 'ftb-auth-row', key: 'row' }, [
+          h('button', { key: 'go', className: 'ftb-btn ftb-btn-primary', disabled: busy, onClick: () => act({ kind: 'auth-start' }) }, '🔑 授权飞书'),
+        ]),
+      ]))
+      return items
+    }
+
     function Board() {
       const stateArr = React.useState(false)
       const open = stateArr[0]; const setOpen = stateArr[1]
@@ -122,6 +166,8 @@ window.__ModuleLoader__.load({
       const sc = scArr[0]; const setSc = scArr[1]
       const scBusyArr = React.useState(false)
       const scBusy = scBusyArr[0]; const setScBusy = scBusyArr[1]
+      const errArr = React.useState(null)
+      const err = errArr[0]; const setErr = errArr[1]
 
       const refresh = async () => {
         try {
@@ -134,11 +180,15 @@ window.__ModuleLoader__.load({
 
       const act = async (body) => {
         setBusy(true)
+        setErr(null)
         try {
           const d = await rpc('/api/feishu-tasks/action', body)
           if (d && typeof d === 'object' && d.groups) setData(d)
           else await refresh()
-        } catch (e) { console.error('[feishu-task-recorder] action 失败', e) }
+        } catch (e) {
+          setErr(String((e && e.message) || e))
+          console.error('[feishu-task-recorder] action 失败', e)
+        }
         finally { setBusy(false) }
       }
       const onJudge = (id, verdict) => act({ kind: 'judge', id: id, verdict: verdict })
@@ -166,9 +216,12 @@ window.__ModuleLoader__.load({
       const groups = (data && data.groups) || { pending: [], ai: [], manual: [], done: [] }
       const body = []
 
+      if (err) body.push(h('div', { className: 'ftb-err', key: 'acterr' }, err))
       if (data && data.lastError) body.push(h('div', { className: 'ftb-err', key: 'err' }, '轮询错误：' + data.lastError))
       if (data && data.board && data.board.lastError) body.push(h('div', { className: 'ftb-err', key: 'berr' }, '看板同步：' + data.board.lastError))
-      if (data && data.auth && data.auth.userReady === false) body.push(h('div', { className: 'ftb-err', key: 'auth' }, '飞书用户态未授权，请在会话里让 agent 发起授权'))
+      if (data && data.auth) {
+        for (const item of renderAuth(data, act, busy)) body.push(item)
+      }
       if (sc) body.push(h(SelfCheckPanel, { key: 'scpanel', data: sc, onClose: () => setSc(null), onRetry: runSelfCheck }))
       if (!data) body.push(h('div', { className: 'ftb-empty', key: 'loading' }, '加载中…'))
 

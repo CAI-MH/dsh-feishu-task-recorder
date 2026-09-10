@@ -1,7 +1,7 @@
 {
   "name": "dsh-feishu-task-recorder",
-  "version": "0.2.0",
-  "description": "轮询飞书会话提取候选任务，与任务看板插件双向同步，含界面悬浮面板 — DSH bundle。",
+  "version": "0.3.0",
+  "description": "轮询飞书群聊/单聊提取候选任务，一键授权（device flow），与任务看板插件双向同步，含界面悬浮面板 — DSH bundle。",
   "license": "MIT",
   "type": "module",
   "main": "index.js",
